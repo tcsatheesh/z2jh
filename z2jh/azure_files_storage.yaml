@@ -1,0 +1,83 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: users-azurefiles
+  namespace: z2jh
+provisioner: kubernetes.io/azure-file
+mountOptions:
+  - dir_mode=0777
+  - file_mode=0777
+  - uid=2000
+  - gid=2000
+  - mfsymlinks
+  - cache=strict
+parameters:
+  skuName: Standard_LRS
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: users-azurefiles
+  namespace: z2jh
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  storageClassName: users-azurefiles
+  azureFile:
+    secretName: azure-stg-secret
+    shareName: users
+    readOnly: false
+  mountOptions:
+  - dir_mode=0775
+  - file_mode=0775
+  - mfsymlinks
+  - nobrl
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: users-azurefiles
+  namespace: z2jh
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: users-azurefiles
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: notebooks-azurefiles
+  namespace: z2jh
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  storageClassName: notebooks-azurefiles
+  azureFile:
+    secretName: azure-stg-secret
+    shareName: notebooks
+    readOnly: false
+  mountOptions:
+  - dir_mode=0555
+  - file_mode=0555
+  - mfsymlinks
+  - nobrl
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: notebooks-azurefiles
+  namespace: z2jh
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: notebooks-azurefiles
+  resources:
+    requests:
+      storage: 1Gi

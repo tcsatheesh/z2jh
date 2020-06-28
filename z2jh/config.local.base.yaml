@@ -1,0 +1,160 @@
+hub:
+  service:
+    type: ClusterIP  
+  extraConfig:    
+    00-first-config: |
+      import json
+      import jwt
+      import os
+      import urllib
+      import requests
+
+      from tornado import gen
+      from tornado.auth import OAuth2Mixin
+      from tornado.log import app_log
+      from tornado.httpclient import HTTPRequest, AsyncHTTPClient
+      from oauthenticator.azuread import AzureAdOAuthenticator
+      from traitlets import Unicode, default
+
+      class CustomAzureADAuthenticator(AzureAdOAuthenticator):
+          async def authenticate(self, handler, data=None):
+            userdict = await super().authenticate(handler, data)
+            # default name from Azure AD can contain spaces and messes up container names. Use the upn.
+            # upn is in the format some.thing@domain.com so take the name before @ and remove any dots in the name
+            userdict['name'] = userdict['auth_state']['user']['upn'].split('@')[0].replace('.','')            
+            return userdict
+
+          @gen.coroutine
+          def pre_spawn_start(self, user, spawner):
+              auth_state = yield user.get_auth_state()
+              
+              # this is a terrible idea to log auth_state so do NOT do it production.
+              # it super useful to debug but a big security hole.
+              # comment or remove the next line when deploying to production
+              self.log.info('pre_spawn_start auth_state:%s' % auth_state)           
+              self.log.info('pre_spawn_start user name: %s' % user.name)
+
+              # get the username to send to the NB_USER environment variable. 
+              # this becomes the username in the container.
+              nb_user = user.name
+              
+              nb_uid = "1000" # default uid
+              nb_gid = "1000" # default gid
+              if 'roles' in auth_state['user']: # this is defensive in case user assignment required is not set
+                # get the UID and GID from the Azure Active Directory roles field. 
+                # see https://docs.microsoft.com/en-us/azure/active-directory/develop/howto-add-app-roles-in-azure-ad-apps
+                # in this sample the roles are of the format ['uid,gid'] so we parse it to extract the uid and gid.
+                # app role assignment can be done in Azure AD using Azure portal.
+                # to force a user to have access set user assignment required in the AD application https://docs.microsoft.com/en-us/azure/active-directory/manage-apps/assign-user-or-group-access-portal#configure-an-application-to-require-user-assignment
+                # to make this production grade update the code below to check for the roles attribute otherwise provide a default value.
+                # The roles in the Azure AD application must have the following format when editing the manifest
+                # Note the value field below where you have "uid,gid"
+                  # "appRoles": [
+                  #   {
+                  #     "allowedMemberTypes": [
+                  #       "User"
+                  #     ],
+                  #     "description": "Basic users have the ability to view notebooks.",
+                  #     "displayName": "Basic",
+                  #     "id": "d1c2ade8-98f8-45fd-aa4a-6d06b947c26f",
+                  #     "isEnabled": true,
+                  #     "lang": null,
+                  #     "origin": "Application",
+                  #     "value": "1000,1000"
+                  #   },
+                  #   {
+                  #     "allowedMemberTypes": [
+                  #       "User"
+                  #     ],
+                  #     "description": "Advanced users have the ability to view and edit notebooks.",
+                  #     "displayName": "Advanced",
+                  #     "id": "d1c2ade8-98f8-45fd-aa4a-6d06b947c46f",
+                  #     "isEnabled": true,
+                  #     "lang": null,
+                  #     "origin": "Application",
+                  #     "value": "2000,2000"
+                  #   }
+                  # ]
+                nb_user_roles = auth_state['user']['roles'][0].split(',')
+                self.log.info('pre_spawn_start nb_user_roles: %s' % str(nb_user_roles))
+                nb_uid = nb_user_roles[0]
+                nb_gid = nb_user_roles[1]
+                # log only for debugging. comment out for production
+                self.log.info('pre_spawn_start NB_USER: %s' % str(nb_user))
+                self.log.info('pre_spawn_start NB_UID: %s' % str(nb_uid))
+                self.log.info('pre_spawn_start NB_GID: %s' % str(nb_gid))
+              else:
+                self.log.info('No roles in auth_state using default roles')
+              spawner.environment['NB_USER'] = nb_user
+              spawner.environment['NB_UID'] = nb_uid
+              spawner.environment['NB_GID'] = nb_gid
+      c.JupyterHub.authenticator_class = CustomAzureADAuthenticator
+      c.Spawner.notebook_dir = '/home/{username}' # start the notebook in the user folder
+      c.KubeSpawner.cmd = 'start-singleuser.sh' # call the cmd as you need to pass the argument below
+      c.KubeSpawner.args = ['--allow-root'] # this is a MUST to use the NB_USER, NB_UID and NB_GID to set username, uid and gid in the container
+      # c.JupyterHub.template_paths = ['uitemplates']
+proxy:
+  secretToken: "c7f5cc136ecc756ce0677d320d810fab2134c2af4513076e3798224e36ae69f6"
+  service:
+    type: ClusterIP #https://gist.github.com/manics/c4bcf53a210d444db9e64db7673e8580
+auth:
+  state:
+    enabled: true # this is required to get the auth_state which has the roles from Azure AD.
+    cryptoKey: "f547055baac27f5396c08e942ec706622bc6a14a1a0969130ac6baecdb7542c5"
+  type: azuread
+  azuread:
+    clientId: "{{CLIENT_ID}}"
+    clientSecret: "{{CLIENT_SECRET}}"
+    tenantId: "{{TENANT_ID}}"
+    callbackUrl: "http://localhost:32737/hub/oauth_callback" # must match the Azure AD application redirect url    
+  admin:
+    users:
+      - {{ADMIN_USER}}
+    access: false
+ingress:
+  enabled: true
+  hosts:
+    - localhost # set this to the host that will be used by the end users to access this service https://zero-to-jupyterhub.readthedocs.io/en/latest/administrator/advanced.html#ingress
+singleuser:
+  uid: 0 # absolute MUST to use the NB_USER, NB_UID and NB_GID to set username, uid and gid in the container
+  defaultUrl: "/lab"
+  image:
+    name: jupyter/base-notebook
+    tag: 8e8cbd0a0af7
+  profileList:
+    - display_name: "Base environment"
+      description: "The base jupyterhub environment"
+      default: true
+    - display_name: "Minimal environment"
+      description: "To avoid too much bells and whistles: Python."
+      kubespawner_override:
+        image: jupyter/minimal-notebook:76402a27fd13
+    - display_name: "Custom environment"
+      description: "To add ipywidgets and git support."
+      kubespawner_override:
+        image: jupyterlab:v1
+    - display_name: "Scipy environment"
+      description: "The Jupyter Stacks scipy image!"
+      kubespawner_override:
+        image: jupyter/scipy-notebook:76402a27fd13
+  memory:
+    limit: 2G
+    guarantee: 2G
+  cpu:
+    limit: 2
+    guarantee: 2
+  storage:
+    type: "static"
+    static:
+      pvcName: users-azurefiles
+      subPath: '{username}'
+    homeMountPath: /home/{username}
+    extraVolumes:
+      - name: notebooks-azurefiles
+        persistentVolumeClaim:
+          claimName: notebooks-azurefiles
+    extraVolumeMounts:
+      - name: notebooks-azurefiles
+        mountPath: /bifrost/notebooks
+  extraEnv:
+      JUPYTER_ALLOW_INSECURE_WRITES: '1' # https://github.com/jupyter/jupyter_core/pull/182/    

@@ -1,0 +1,12 @@
+--- start.sh	2020-06-28 15:20:47.030000000 +0100
++++ start.sh.new	2020-06-28 15:48:12.450000000 +0100
+@@ -83,7 +83,8 @@
+             groupadd -g $NB_GID -o ${NB_GROUP:-${NB_USER}}
+         fi
+         userdel $NB_USER
+-        useradd --home /home/$NB_USER -u $NB_UID -g $NB_GID -G 100 -l $NB_USER
++        groupadd --gid $NB_OGID $NB_OGID
++        useradd --home /home/$NB_USER -u $NB_UID -g $NB_GID -G 100,$NB_OGID -l $NB_USER
+     fi
+ 
+     # Enable sudo if requested
