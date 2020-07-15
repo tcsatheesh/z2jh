@@ -1,0 +1,16 @@
+name: azureml
+dependencies:
+  - python=3.6
+  - pip
+  - azure-keyvault
+  - azure-storage-blob
+  - numpy
+  - pandas
+  - matplotlib
+  - pillow
+  - bokeh
+  - datashader
+  - holoviews
+  - pip:
+    - pyviz
+    - azureml-sdk[accel-models,automl,contrib,datadrift,explain,interpret,notebooks,services,tensorboard]

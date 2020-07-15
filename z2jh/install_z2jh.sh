@@ -10,7 +10,15 @@ kubectl apply -f ./azure_files_storage.yaml -n $Z2JH_NAMESPACE
 
 helm repo add jupyterhub https://jupyterhub.github.io/helm-chart/
 helm repo update
-helm upgrade --install $Z2JH_NAMESPACE jupyterhub/jupyterhub --namespace $Z2JH_NAMESPACE --version=0.9.0 --values config.local.yaml
+helm upgrade --install $Z2JH_NAMESPACE \
+    jupyterhub/jupyterhub \
+    --namespace $Z2JH_NAMESPACE \
+    --version=0.9.0 \
+    --values working.config.local.yaml
 # helm upgrade --install $Z2JH_NAMESPACE jupyterhub/jupyterhub --namespace $Z2JH_NAMESPACE --version=0.9.0 --values config.local.base.yaml
-POD_NAME=$(kubectl get pods --namespace $Z2JH_NAMESPACE -l "component=hub,release=$Z2JH_NAMESPACE" -o jsonpath="{.items[0].metadata.name}"); kubectl -n $Z2JH_NAMESPACE logs $POD_NAME -f
+POD_NAME=$(kubectl get pods \
+    --namespace $Z2JH_NAMESPACE \
+    -l "component=hub,release=$Z2JH_NAMESPACE" \
+    -o jsonpath="{.items[0].metadata.name}"); \
+    kubectl -n $Z2JH_NAMESPACE logs $POD_NAME -f
 
