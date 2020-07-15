@@ -206,7 +206,7 @@ auth:
     clientId: "{{CLIENT_ID}}"
     clientSecret: "{{CLIENT_SECRET}}"
     tenantId: "{{TENANT_ID}}"
-    callbackUrl: "http://localhost:32737/hub/oauth_callback" # must match the Azure AD application redirect url    
+    callbackUrl: "http://localhost/hub/oauth_callback" # must match the Azure AD application redirect url    
   admin:
     users:
       - {{ADMIN_USER}}

@@ -6,7 +6,7 @@ kubectl create secret generic azure-stg-secret \
     --from-literal=azurestorageaccountkey=$STORAGE_ACCOUNT_KEY \
     -n z2jh
 
-kubectl apply -f .\azure_files_storage.yaml -n $Z2JH_NAMESPACE
+kubectl apply -f ./azure_files_storage.yaml -n $Z2JH_NAMESPACE
 
 helm repo add jupyterhub https://jupyterhub.github.io/helm-chart/
 helm repo update
