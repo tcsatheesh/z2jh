@@ -77,3 +77,105 @@ spec:
   resources:
     requests:
       storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: uitemplates-azurefiles
+  namespace: z2jh
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  storageClassName: uitemplates-azurefiles
+  azureFile:
+    secretName: azure-stg-secret
+    shareName: uitemplates
+    readOnly: false
+  mountOptions:
+  - dir_mode=0555
+  - file_mode=0555
+  - mfsymlinks
+  - nobrl
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uitemplates-azurefiles
+  namespace: z2jh
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: uitemplates-azurefiles
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: libs-azurefiles
+  namespace: z2jh
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  storageClassName: libs-azurefiles
+  azureFile:
+    secretName: azure-stg-secret
+    shareName: libs
+    readOnly: false
+  mountOptions:
+  - dir_mode=0555
+  - file_mode=0555
+  - mfsymlinks
+  - nobrl
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: libs-azurefiles
+  namespace: z2jh
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: libs-azurefiles
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: modules-azurefiles
+  namespace: z2jh
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  storageClassName: modules-azurefiles
+  azureFile:
+    secretName: azure-stg-secret
+    shareName: modules
+    readOnly: false
+  mountOptions:
+  - dir_mode=0555
+  - file_mode=0555
+  - mfsymlinks
+  - nobrl
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: modules-azurefiles
+  namespace: z2jh
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: modules-azurefiles
+  resources:
+    requests:
+      storage: 1Gi

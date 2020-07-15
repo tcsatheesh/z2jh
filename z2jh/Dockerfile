@@ -1,22 +1,33 @@
-ARG BASE_CONTAINER=jupyter/minimal-notebook:54462805efcb
-FROM $BASE_CONTAINER
+FROM jupyter/minimal-notebook:latest
 
-LABEL maintainer="Mea Culpa"
+LABEL maintainer="GitHub User"
 
 USER root
 
 # patch to add secondary group
-COPY start.sh.patch /tmp/start.sh.patch
-RUN patch -u /usr/local/bin/start.sh -i /tmp/start.sh.patch
+# COPY ogid/start.sh.patch /tmp/start.sh.patch
+# RUN patch -u /usr/local/bin/start.sh -i /tmp/start.sh.patch
+
+# required to active the modules in a non-interactive environment
+# https://lmod.readthedocs.io/en/latest/030_installing.html#bash
+COPY lmod/load_modules.sh /usr/local/bin
+
+# Timezone info required for tzdata package https://stackoverflow.com/questions/44331836/apt-get-install-tzdata-noninteractive
+RUN ln -fs /usr/share/zoneinfo/Europe/London /etc/localtime && \
+    apt-get update && \
+    apt-get --quiet --yes install lua-filesystem lua-json lua-posix lua-term lua5.2 tcl tcl-dev lmod && \
+    conda update -n base conda && \
+    chmod +x /usr/local/bin/load_modules.sh
 
 USER $NB_UID
 
-# change the pinned version to 4.6.14
-COPY pinned /opt/conda/conda-meta/pinned
-RUN conda config --set auto_update_conda True && \
-    conda install conda=4.6.14 && \
-    conda config --set auto_update_conda False
+RUN conda install --quiet --yes ipywidgets bqplot nodejs ipyleaflet matplotlib pandas numpy networkx pythreejs && \
+    jupyter labextension install @jupyter-widgets/jupyterlab-manager jupyter-leaflet bqplot jupyter-threejs
 
-RUN conda install jupyterlab=2.1.0
+# https://lmod.readthedocs.io/en/latest/030_installing.html#bash-shell-scripts
+ENV BASH_ENV /usr/local/bin/load_modules.sh
+
+# Set the environment variable for LMOD
+ENV LMOD_PKG /usr/share/lmod/lmod
 
 USER $NB_UID

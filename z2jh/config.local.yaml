@@ -1,6 +1,13 @@
 hub:
   service:
-    type: ClusterIP  
+    type: ClusterIP
+  extraVolumes: 
+    - name: uitemplates-azurefiles
+      persistentVolumeClaim:
+        claimName: uitemplates-azurefiles
+  extraVolumeMounts:
+    - name: uitemplates-azurefiles
+      mountPath: /jupyter/uitemplates
   extraConfig:    
     00-first-config: |
       import json
@@ -15,8 +22,24 @@ hub:
       from tornado.httpclient import HTTPRequest, AsyncHTTPClient
       from oauthenticator.azuread import AzureAdOAuthenticator
       from traitlets import Unicode, default
+      from oauthenticator.oauth2 import OAuthLoginHandler, OAuthenticator
 
       class CustomAzureADAuthenticator(AzureAdOAuthenticator):
+        
+          login_service = Unicode(
+            os.environ.get('LOGIN_SERVICE', 'Z2JH'),
+            config=True,
+            help="""Login with your Azure organization credentials"""
+          )
+
+          tenant_id = Unicode(config=True, help="The Azure Active Directory Tenant ID")
+
+          @default('tenant_id')
+          def _tenant_id_default(self):
+              return os.environ.get('AAD_TENANT_ID', '')
+
+          username_claim = Unicode(config=True)
+
           # use the v2 version of the authorization as it allows custom claim mapping.
           # https://d1ocs.microsoft.com/en-us/azure/active-directory/develop/active-directory-claims-mapping#example-create-and-assign-a-policy-to-include-the-employeeid-and-tenantcountry-as-claims-in-tokens-issued-to-a-service-principal
           @default("authorize_url")
@@ -51,23 +74,24 @@ hub:
             for jwk in jwk_keys['keys']:
                 kid = jwk['kid']
                 public_keys[kid] = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk))
-            kid = jwt.get_unverified_header(token)['kid']
-            public_key = public_keys[kid]
-
-            self.log.info("token: %s" % token)
-            algorithm = ['RS256']
             try:
+              kid = jwt.get_unverified_header(token)['kid']
+              public_key = public_keys[kid]
+
+              # self.log.info("token: %s" % token)
+              algorithm = ['RS256']
               decoded = jwt.decode(token,
-                                          public_key=public_key,
-                                          algorithm=algorithm,
-                                          audience=self.client_id)
-            except:
-              import traceback
-              exc_type, exc_value, exc_traceback = sys.exc_info()
-              traceback.print_tb(exc_traceback, limit=None, file=sys.stdout)
-              decoded = jwt.decode(token,
-                                    verify=False)
-            return decoded            
+                                  key=public_key,
+                                  algorithm=algorithm,
+                                  audience=self.client_id)
+            except jwt.exceptions.DecodeError as dex:
+              # import traceback
+              # exc_type, exc_value, exc_traceback = sys.exc_info()
+              # traceback.print_tb(exc_traceback, limit=None, file=sys.stdout)
+              # decoded = jwt.decode(token,verify=False)
+              # self.log.info("Error in decoding token: %s " % str(dex))
+              raise dex
+            return decoded
 
           async def authenticate(self, handler, data=None):
             # userdict = await super().authenticate(handler, data)
@@ -103,17 +127,19 @@ hub:
             resp = await http_client.fetch(req)
             resp_json = json.loads(resp.body.decode('utf8', 'replace'))
 
-            # app_log.info("Response %s", resp_json)
-            access_token = resp_json['access_token']
+            # self.log.info("Response %s", resp_json)
+            # Ignore the access_token for now as its not used. 
+            # If you decide to use it later then you need to verify it first.
+            # access_token = resp_json['access_token']
 
-            id_token = resp_json['id_token']
+            id_token = resp_json['id_token']            
             decoded = self.get_decoded_token(id_token)
 
             self.log.info('authenticate decoded:%s' % decoded)
 
             userdict = {"name": decoded[self.username_claim].replace('.','')}
             userdict["auth_state"] = auth_state = {}
-            auth_state['access_token'] = access_token
+            # auth_state['access_token'] = access_token
             # results in a decoded JWT for the user data
             auth_state['user'] = decoded
 
@@ -123,7 +149,7 @@ hub:
           def pre_spawn_start(self, user, spawner):
               auth_state = yield user.get_auth_state()
               
-              # this is a terrible idea to log auth_state so do NOT do it production.
+              # this is a terrible idea to log auth_state so do NOT do it in production.
               # it super useful to debug but a big security hole.
               # comment or remove the next line when deploying to production
               # self.log.info('pre_spawn_start auth_state:%s' % auth_state)           
@@ -149,12 +175,13 @@ hub:
                 nb_gid = nb_user_roles[1]
                 nb_ogid = nb_user_roles[2]
                 # log only for debugging. comment out for production
-              else:
-                self.log.info('No roles in auth_state using default roles')
-              self.log.info('pre_spawn_start NB_USER: %s' % str(nb_user))
-              self.log.info('pre_spawn_start NB_UID: %s' % str(nb_uid))
-              self.log.info('pre_spawn_start NB_GID: %s' % str(nb_gid))
-              self.log.info('pre_spawn_start NB_OGID: %s' % str(nb_ogid))
+              # else:
+              #   self.log.info('No roles in auth_state using default roles')
+              # Disable the next set of log lines in production
+              # self.log.info('pre_spawn_start NB_USER: %s' % str(nb_user))
+              # self.log.info('pre_spawn_start NB_UID: %s' % str(nb_uid))
+              # self.log.info('pre_spawn_start NB_GID: %s' % str(nb_gid))
+              # self.log.info('pre_spawn_start NB_OGID: %s' % str(nb_ogid))
               spawner.environment['NB_USER'] = nb_user
               spawner.environment['NB_UID'] = nb_uid
               spawner.environment['NB_GID'] = nb_gid
@@ -163,21 +190,23 @@ hub:
       c.Spawner.notebook_dir = '/home/{username}' # start the notebook in the user folder
       c.KubeSpawner.cmd = 'start-singleuser.sh' # call the cmd as you need to pass the argument below
       c.KubeSpawner.args = ['--allow-root'] # this is a MUST to use the NB_USER, NB_UID and NB_GID to set username, uid and gid in the container
-      # c.JupyterHub.template_paths = ['uitemplates']
+      c.JupyterHub.template_paths = ['/jupyter/uitemplates']
+      c.JupyterHub.template_vars = {'announcement': 'You are seeing a private preview of this service. This is not for production use yet.'}
+      c.JupyterHub.logo_file = '/jupyter/uitemplates/logo.svg'
 proxy:
-  secretToken: "c7f5cc136ecc756ce0677d320d810fab2134c2af4513076e3798224e36ae69f6"
+  secretToken: "{{SECRET_TOKEN}}"
   service:
     type: ClusterIP #https://gist.github.com/manics/c4bcf53a210d444db9e64db7673e8580
 auth:
   state:
     enabled: true # this is required to get the auth_state which has the roles from Azure AD.
-    cryptoKey: "f547055baac27f5396c08e942ec706622bc6a14a1a0969130ac6baecdb7542c5"
+    cryptoKey: "{{CRYPTO_KEY}}"
   type: azuread
   azuread:
     clientId: "{{CLIENT_ID}}"
     clientSecret: "{{CLIENT_SECRET}}"
     tenantId: "{{TENANT_ID}}"
-    callbackUrl: "http://localhost/hub/oauth_callback" # must match the Azure AD application redirect url    
+    callbackUrl: "http://localhost:32737/hub/oauth_callback" # must match the Azure AD application redirect url    
   admin:
     users:
       - {{ADMIN_USER}}
@@ -192,12 +221,33 @@ singleuser:
   image:
     name: custom-notebook
     tag: v1
-  cpu:
-    limit: 2
-    guarantee: 2
-  memory:
-    limit: 2G
-    guarantee: 2G
+  profileList:
+    - display_name: "Standard environment"
+      description: "The standard environment. Min: 0.5 CPU & Max: 2 CPU and Min 512M RAM & Max: 2GB RAM."
+      default: true
+      kubespawner_override:
+        cpu_guarantee: 0.5
+        mem_guarantee: 512M
+        cpu_limit: 2
+        mem_limit: 2G
+    - display_name: "Advanced environment"
+      description: "The standard environment. Min: 2 CPU & Max: 4 CPU and Min 2GB RAM & Max: 4GB RAM."
+      kubespawner_override:
+        image: custom-notebook:v1
+        cpu_guarantee: 2
+        mem_guarantee: 2G
+        cpu_limit: 4
+        mem_limit: 4G
+    - display_name: "ML environment"
+      description: "The standard environment. Min: 2 CPU & Max: 4 CPU and Min 2GB RAM & Max: 8GB RAM."
+      kubespawner_override:
+        image: custom-notebook:v1
+        cpu_guarantee: 2
+        mem_guarantee: 2G
+        cpu_limit: 4
+        mem_limit: 8G
+        extra_resource_guarantees:
+          nvidia.com/gpu: 2
   storage:
     type: "static"
     static:
@@ -208,8 +258,18 @@ singleuser:
       - name: notebooks-azurefiles
         persistentVolumeClaim:
           claimName: notebooks-azurefiles
+      - name: lmod-modules-azurefiles
+        persistentVolumeClaim:
+          claimName: lmod-modules-azurefiles
+      - name: libs-azurefiles
+        persistentVolumeClaim:
+          claimName: libs-azurefiles
     extraVolumeMounts:
       - name: notebooks-azurefiles
-        mountPath: /bifrost/notebooks
+        mountPath: /jupyter/notebooks
+      - name: lmod-modules-azurefiles
+        mountPath: /jupyter/lmod/modules
+      - name: libs-azurefiles
+        mountPath: /jupyter/libs
   extraEnv:
       JUPYTER_ALLOW_INSECURE_WRITES: '1' # https://github.com/jupyter/jupyter_core/pull/182/
