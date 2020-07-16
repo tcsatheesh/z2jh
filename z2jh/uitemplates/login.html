@@ -1,1 +1,30 @@
 {% extends "templates/login.html" %}
+{% block login %}
+<div class="container text-center announcement alert alert-warning" role="alert">
+  Please wait while we redirect you in <p id="countdown"></p> seconds...
+</div>
+<script type="text/javascript">
+  var countdownEnabled = false;
+
+  function Redirect(){
+    window.location.href = ("/hub/oauth_login?next=");
+  }
+
+  if (countdownEnabled) {
+    // Use the following code if you want to count down
+    var duration = 10;
+    var x = setInterval(function() { 
+      var t = duration; 
+      document.getElementById("countdown").innerHTML = t; 
+      if (t < 1) { 
+        clearInterval(x);
+        Redirect()
+      }
+      duration = duration -1;
+    },1000); 
+  }else {
+    // automatically redirect
+    Redirect()
+  }
+</script>
+{% endblock login %}

@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 temp
-azcopy_windows_amd64_10.5.0
+azcopy_*_amd64_*
 .vscode
 working.config.local.yaml
 grafana
