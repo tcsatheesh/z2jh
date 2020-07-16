@@ -231,7 +231,7 @@ singleuser:
         cpu_limit: 2
         mem_limit: 2G
     - display_name: "Advanced environment"
-      description: "The standard environment. Min: 2 CPU & Max: 4 CPU and Min 2GB RAM & Max: 4GB RAM."
+      description: "The advanced environment. Min: 2 CPU & Max: 4 CPU and Min 2GB RAM & Max: 4GB RAM."
       kubespawner_override:
         image: custom-notebook:v1
         cpu_guarantee: 2
@@ -239,7 +239,7 @@ singleuser:
         cpu_limit: 4
         mem_limit: 4G
     - display_name: "ML environment"
-      description: "The standard environment. Min: 2 CPU & Max: 4 CPU and Min 2GB RAM & Max: 8GB RAM."
+      description: "The machine learning environment. Min: 2 CPU & Max: 4 CPU and Min 2GB RAM & Max: 8GB RAM and 2 GPUs."
       kubespawner_override:
         image: custom-notebook:v1
         cpu_guarantee: 2
