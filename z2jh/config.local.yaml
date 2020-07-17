@@ -8,8 +8,8 @@ hub:
   extraVolumeMounts:
     - name: uitemplates-azurefiles
       mountPath: /jupyter/uitemplates
-  extraConfig:    
-    00-first-config: |
+  extraConfig:
+    00-auth-config: |
       import json
       import jwt
       import os
@@ -135,30 +135,16 @@ hub:
             id_token = resp_json['id_token']            
             decoded = self.get_decoded_token(id_token)
 
-            self.log.info('authenticate decoded:%s' % decoded)
-
-            userdict = {"name": decoded[self.username_claim].replace('.','')}
+            # self.log.info('authenticate decoded:%s' % decoded)
+            username = decoded[self.username_claim].replace('.','')
+            userdict = {"name": username}
             userdict["auth_state"] = auth_state = {}
             # auth_state['access_token'] = access_token
             # results in a decoded JWT for the user data
             auth_state['user'] = decoded
-
-            return userdict
-
-          @gen.coroutine
-          def pre_spawn_start(self, user, spawner):
-              auth_state = yield user.get_auth_state()
-              
-              # this is a terrible idea to log auth_state so do NOT do it in production.
-              # it super useful to debug but a big security hole.
-              # comment or remove the next line when deploying to production
-              # self.log.info('pre_spawn_start auth_state:%s' % auth_state)           
-              # self.log.info('pre_spawn_start user name: %s' % user.name)
-
-              # get the username to send to the NB_USER environment variable. 
-              # this becomes the username in the container.
-              nb_user = user.name
-              
+            auth_state['username'] = username
+            
+            def _get_user_info(auth_state_user):
               # get the UID and GID from the Azure Active Directory roles field. 
               # see https://docs.microsoft.com/en-us/azure/active-directory/develop/howto-add-app-roles-in-azure-ad-apps
               # in this sample the roles are of the format ['uid,gid'] so we parse it to extract the uid and gid.
@@ -167,27 +153,51 @@ hub:
               # to make this production grade update the code below to check for the roles attribute otherwise provide a default value.
               nb_uid = "1000" # default uid
               nb_gid = "500" # primary group id
-              nb_ogid = "1000" # other gid
-              if 'roles' in auth_state['user']: # this is defensive in case user assignment required is not set
-                nb_user_roles = auth_state['user']['roles'][0].split(',')
+              nb_ogids = "1000" # other gids, separated by semi-colon
+              nb_slug = "standard_environment"
+              if 'roles' in auth_state_user: # this is defensive in case user assignment required is not set
+                nb_user_roles = auth_state_user['roles'][0].split(',')
                 # self.log.info('pre_spawn_start nb_user_roles: %s' % str(nb_user_roles))
                 nb_uid = nb_user_roles[0]
                 nb_gid = nb_user_roles[1]
-                nb_ogid = nb_user_roles[2]
-                # log only for debugging. comment out for production
-              # else:
-              #   self.log.info('No roles in auth_state using default roles')
-              # Disable the next set of log lines in production
-              # self.log.info('pre_spawn_start NB_USER: %s' % str(nb_user))
-              # self.log.info('pre_spawn_start NB_UID: %s' % str(nb_uid))
-              # self.log.info('pre_spawn_start NB_GID: %s' % str(nb_gid))
-              # self.log.info('pre_spawn_start NB_OGID: %s' % str(nb_ogid))
-              spawner.environment['NB_USER'] = nb_user
-              spawner.environment['NB_UID'] = nb_uid
-              spawner.environment['NB_GID'] = nb_gid
-              spawner.environment['NB_OGID'] = nb_ogid              
+                nb_ogids = nb_user_roles[2]
+                nb_slug = nb_user_roles[3]
+              return nb_uid, nb_gid, nb_ogids, nb_slug
+            
+            auth_state["uid"], auth_state["gid"], auth_state["ogids"], auth_state["user_slug"] = _get_user_info(auth_state['user'])
+            return userdict
+
+          @gen.coroutine
+          def pre_spawn_start(self, user, spawner):
+              auth_state = yield user.get_auth_state()              
+              spawner.environment['NB_USER'] = user.name
+              spawner.environment['NB_UID'] = auth_state["uid"]
+              spawner.environment['NB_GID'] = auth_state["gid"]
+              spawner.environment['NB_OGIDS'] = auth_state["ogids"]
+
       c.JupyterHub.authenticator_class = CustomAzureADAuthenticator
-      c.Spawner.notebook_dir = '/home/{username}' # start the notebook in the user folder
+    01-spawn-config: |
+      # from https://jupyterhub.readthedocs.io/en/stable/api/spawner.html#jupyterhub.spawner.Spawner.auth_state_hook
+      def userdata_hook(spawner, auth_state):
+          spawner.userslug = auth_state["user_slug"]
+      
+      # from https://github.com/jupyterhub/zero-to-jupyterhub-k8s/issues/1178#issuecomment-471715191
+      # Override the options_form presented for users if they have gpu_access.
+      # See: https://github.com/jupyterhub/jupyterhub/issues/2390 for related details
+      async def custom_options_form(self):
+        # override the profile list if it exists for the user
+        for _profile in self.profile_list:
+          if _profile['slug'] == self.userslug:
+            self.profile_list = []
+            self.profile_list.append(_profile)
+            # now return empty and that should use the new default
+            return ""
+        return self._options_form_default()
+
+      c.KubeSpawner.auth_state_hook = userdata_hook
+      c.KubeSpawner.options_form = custom_options_form
+    99-other-config: |
+      c.KubeSpawner.notebook_dir = '/home/{username}' # start the notebook in the user folder
       c.KubeSpawner.cmd = 'start-singleuser.sh' # call the cmd as you need to pass the argument below
       c.KubeSpawner.args = ['--allow-root'] # this is a MUST to use the NB_USER, NB_UID and NB_GID to set username, uid and gid in the container
       c.JupyterHub.template_paths = ['/jupyter/uitemplates']
@@ -223,6 +233,7 @@ singleuser:
     tag: v1
   profileList:
     - display_name: "Standard environment"
+      slug: "standard_environment"
       description: "The standard environment. Min: 0.5 CPU & Max: 2 CPU and Min 512M RAM & Max: 2GB RAM."
       default: true
       kubespawner_override:
@@ -231,6 +242,7 @@ singleuser:
         cpu_limit: 2
         mem_limit: 2G
     - display_name: "Advanced environment"
+      slug: "advanced_environment"
       description: "The advanced environment. Min: 2 CPU & Max: 4 CPU and Min 2GB RAM & Max: 4GB RAM."
       kubespawner_override:
         image: custom-notebook:v1
@@ -238,7 +250,8 @@ singleuser:
         mem_guarantee: 2G
         cpu_limit: 4
         mem_limit: 4G
-    - display_name: "ML environment"
+    - display_name: "Machine Learning environment"
+      slug: "machine_learning_environment"
       description: "The machine learning environment. Min: 2 CPU & Max: 4 CPU and Min 2GB RAM & Max: 8GB RAM and 2 GPUs."
       kubespawner_override:
         image: custom-notebook:v1
@@ -252,24 +265,24 @@ singleuser:
     type: "static"
     static:
       pvcName: users-azurefiles
-      subPath: '{username}'
+      subPath: "{username}"
     homeMountPath: /home/{username}
     extraVolumes:
       - name: notebooks-azurefiles
         persistentVolumeClaim:
           claimName: notebooks-azurefiles
-      - name: lmod-modules-azurefiles
+      - name: modules-azurefiles
         persistentVolumeClaim:
-          claimName: lmod-modules-azurefiles
+          claimName: modules-azurefiles
       - name: libs-azurefiles
         persistentVolumeClaim:
           claimName: libs-azurefiles
     extraVolumeMounts:
       - name: notebooks-azurefiles
         mountPath: /jupyter/notebooks
-      - name: lmod-modules-azurefiles
-        mountPath: /jupyter/lmod/modules
+      - name: modules-azurefiles
+        mountPath: /jupyter/modules
       - name: libs-azurefiles
         mountPath: /jupyter/libs
   extraEnv:
-      JUPYTER_ALLOW_INSECURE_WRITES: '1' # https://github.com/jupyter/jupyter_core/pull/182/
+    JUPYTER_ALLOW_INSECURE_WRITES: "1" # https://github.com/jupyter/jupyter_core/pull/182/
