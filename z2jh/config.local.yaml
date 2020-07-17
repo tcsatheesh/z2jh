@@ -60,7 +60,7 @@ hub:
           
           @default('username_claim')
           def _username_claim_default(self):
-            return 'onpremisessamaccountname'
+            return 'onprem_sid'
 
           def get_decoded_token(self, token):
             AZURE_AD_OPEN_ID_CONFIGURATION_URL = \
@@ -73,22 +73,14 @@ hub:
             for jwk in jwk_keys['keys']:
                 kid = jwk['kid']
                 public_keys[kid] = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk))
-            try:
-              kid = jwt.get_unverified_header(token)['kid']
-              public_key = public_keys[kid]
+            kid = jwt.get_unverified_header(token)['kid']
+            public_key = public_keys[kid]
 
-              algorithm = ['RS256']
-              decoded = jwt.decode(token,
-                                  key=public_key,
-                                  algorithm=algorithm,
-                                  audience=self.client_id)
-            except jwt.exceptions.DecodeError as dex:
-              # import traceback
-              # exc_type, exc_value, exc_traceback = sys.exc_info()
-              # traceback.print_tb(exc_traceback, limit=None, file=sys.stdout)
-              # decoded = jwt.decode(token,verify=False)
-              # self.log.info("Error in decoding token: %s " % str(dex))
-              raise dex
+            algorithm = ['RS256']
+            decoded = jwt.decode(token,
+                                key=public_key,
+                                algorithm=algorithm,
+                                audience=self.client_id)
             return decoded
 
           async def authenticate(self, handler, data=None):
@@ -123,13 +115,12 @@ hub:
             decoded = self.get_decoded_token(id_token)
 
             # self.log.info('authenticate decoded:%s' % decoded)
-            username = decoded[self.username_claim].replace('.','')
-            userdict = {"name": username}
+            userdict = {}
             userdict["auth_state"] = auth_state = {}
-            auth_state['user'] = decoded
-            auth_state['username'] = username
+            auth_state['user'] = decoded            
             
-            def _get_user_info(auth_state_user):
+            def _update_auth_state(auth_state, raise_unauthorized_error=False):
+              auth_state_user = auth_state['user']
               # get the UID and GID from the Azure Active Directory roles field. 
               # see https://docs.microsoft.com/en-us/azure/active-directory/develop/howto-add-app-roles-in-azure-ad-apps
               # in this sample the roles are of the format ['uid,gid'] so we parse it to extract the uid and gid.
@@ -146,9 +137,20 @@ hub:
                 nb_gid = nb_user_roles[1]
                 nb_ogids = nb_user_roles[2]
                 nb_slug = nb_user_roles[3]
-              return nb_uid, nb_gid, nb_ogids, nb_slug
+              else:
+                if raise_unauthorized_error:
+                  from tornado import web
+                  raise web.HTTPError(401)
+              auth_state['uid'] = nb_uid
+              auth_state["gid"] = nb_gid
+              auth_state["ogids"] = nb_ogids
+              auth_state["user_slug"] = nb_slug
+
+              username = auth_state_user['email'].replace('.','').split("@")[0]
+              auth_state['username'] = username
             
-            auth_state["uid"], auth_state["gid"], auth_state["ogids"], auth_state["user_slug"] = _get_user_info(auth_state['user'])
+            _update_auth_state(auth_state)
+            userdict["name"] = auth_state['username']
             return userdict
 
           @gen.coroutine
