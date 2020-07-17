@@ -66,7 +66,6 @@ hub:
             AZURE_AD_OPEN_ID_CONFIGURATION_URL = \
             "https://login.microsoftonline.com/{}/v2.0/.well-known/openid-configuration?appid={}" \
             .format(self.tenant_id,self.client_id)
-            # self.log.info("AZURE_AD_OPEN_ID_CONFIGURATION_URL: %s" % AZURE_AD_OPEN_ID_CONFIGURATION_URL)
             res = requests.get(AZURE_AD_OPEN_ID_CONFIGURATION_URL)
             jwk_keys = requests.get(res.json()["jwks_uri"]).json()
 
@@ -78,7 +77,6 @@ hub:
               kid = jwt.get_unverified_header(token)['kid']
               public_key = public_keys[kid]
 
-              # self.log.info("token: %s" % token)
               algorithm = ['RS256']
               decoded = jwt.decode(token,
                                   key=public_key,
@@ -94,10 +92,6 @@ hub:
             return decoded
 
           async def authenticate(self, handler, data=None):
-            # userdict = await super().authenticate(handler, data)
-            # default name from Azure AD can contain spaces and messes up container names. Use the onpremisessamaccountname.
-            # onpremisessamaccountname is in the format some.thing so remove any dots in the name
-            
             code = handler.get_argument("code")                            
             http_client = AsyncHTTPClient()
 
@@ -112,7 +106,6 @@ hub:
                 params, doseq=True, encoding='utf-8', safe='=')
 
             url = self.token_url
-            # self.log.info('authenticate token_url:%s' % self.token_url)
             headers = {
                 'Content-Type':
                 'application/x-www-form-urlencoded; charset=UTF-8'
@@ -126,12 +119,6 @@ hub:
 
             resp = await http_client.fetch(req)
             resp_json = json.loads(resp.body.decode('utf8', 'replace'))
-
-            # self.log.info("Response %s", resp_json)
-            # Ignore the access_token for now as its not used. 
-            # If you decide to use it later then you need to verify it first.
-            # access_token = resp_json['access_token']
-
             id_token = resp_json['id_token']            
             decoded = self.get_decoded_token(id_token)
 
@@ -139,8 +126,6 @@ hub:
             username = decoded[self.username_claim].replace('.','')
             userdict = {"name": username}
             userdict["auth_state"] = auth_state = {}
-            # auth_state['access_token'] = access_token
-            # results in a decoded JWT for the user data
             auth_state['user'] = decoded
             auth_state['username'] = username
             
@@ -157,7 +142,6 @@ hub:
               nb_slug = "standard_environment"
               if 'roles' in auth_state_user: # this is defensive in case user assignment required is not set
                 nb_user_roles = auth_state_user['roles'][0].split(',')
-                # self.log.info('pre_spawn_start nb_user_roles: %s' % str(nb_user_roles))
                 nb_uid = nb_user_roles[0]
                 nb_gid = nb_user_roles[1]
                 nb_ogids = nb_user_roles[2]
