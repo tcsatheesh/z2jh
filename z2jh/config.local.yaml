@@ -24,172 +24,178 @@ hub:
       from traitlets import Unicode, default
       from oauthenticator.oauth2 import OAuthLoginHandler, OAuthenticator
 
-      class CustomAzureADAuthenticator(AzureAdOAuthenticator):
+      class ValidatedTokenADAuthenticator(AzureAdOAuthenticator):
         
-          login_service = Unicode(
-            os.environ.get('LOGIN_SERVICE', 'Z2JH'),
-            config=True,
-            help="""Login with your Azure organization credentials"""
+        login_service = Unicode(
+          os.environ.get('LOGIN_SERVICE', 'Z2JH'),
+          config=True,
+          help="""Login with your Azure organization credentials"""
+        )
+
+        tenant_id = Unicode(config=True, help="The Azure Active Directory Tenant ID")
+
+        @default('tenant_id')
+        def _tenant_id_default(self):
+            return os.environ.get('AAD_TENANT_ID', '')
+
+        username_claim = Unicode(config=True)
+
+        # use the v2 version of the authorization as it allows custom claim mapping.
+        # https://d1ocs.microsoft.com/en-us/azure/active-directory/develop/active-directory-claims-mapping#example-create-and-assign-a-policy-to-include-the-employeeid-and-tenantcountry-as-claims-in-tokens-issued-to-a-service-principal
+        @default("authorize_url")
+        def _authorize_url_default(self):
+          return 'https://login.microsoftonline.com/{0}/oauth2/v2.0/authorize'.format(self.tenant_id)
+
+        # use the v2 version of the token as it allows custom claim mapping.
+        # https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-claims-mapping#example-create-and-assign-a-policy-to-include-the-employeeid-and-tenantcountry-as-claims-in-tokens-issued-to-a-service-principal
+        @default("token_url")
+        def _token_url_default(self):
+          return 'https://login.microsoftonline.com/{0}/oauth2/v2.0/token'.format(self.tenant_id)
+        
+        # the v2 version of the APIs requires a scope.
+        # https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-claims-mapping#example-create-and-assign-a-policy-to-include-the-employeeid-and-tenantcountry-as-claims-in-tokens-issued-to-a-service-principal
+        @default("scope")
+        def _scope(self):
+          return ['openid', 'email']
+        
+        @default('username_claim')
+        def _username_claim_default(self):
+          return 'onprem_sid'
+
+        def get_decoded_token(self, token):
+          AZURE_AD_OPEN_ID_CONFIGURATION_URL = \
+          "https://login.microsoftonline.com/{}/v2.0/.well-known/openid-configuration?appid={}" \
+          .format(self.tenant_id,self.client_id)
+          res = requests.get(AZURE_AD_OPEN_ID_CONFIGURATION_URL)
+          jwk_keys = requests.get(res.json()["jwks_uri"]).json()
+
+          public_keys = {}
+          for jwk in jwk_keys['keys']:
+              kid = jwk['kid']
+              public_keys[kid] = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk))
+          kid = jwt.get_unverified_header(token)['kid']
+          public_key = public_keys[kid]
+
+          algorithm = ['RS256']
+          decoded = jwt.decode(token,
+                              key=public_key,
+                              algorithm=algorithm,
+                              audience=self.client_id)
+          return decoded        
+
+        async def authenticate(self, handler, data=None):
+          code = handler.get_argument("code")                            
+          http_client = AsyncHTTPClient()
+
+          params = dict(
+              client_id=self.client_id,
+              client_secret=self.client_secret,
+              grant_type='authorization_code',
+              code=code,
+              redirect_uri=self.get_callback_url(handler))
+
+          data = urllib.parse.urlencode(
+              params, doseq=True, encoding='utf-8', safe='=')
+
+          url = self.token_url
+          headers = {
+              'Content-Type':
+              'application/x-www-form-urlencoded; charset=UTF-8'
+          }
+          req = HTTPRequest(
+              url,
+              method="POST",
+              headers=headers,
+              body=data  # Body is required for a POST...
           )
 
-          tenant_id = Unicode(config=True, help="The Azure Active Directory Tenant ID")
+          resp = await http_client.fetch(req)
+          resp_json = json.loads(resp.body.decode('utf8', 'replace'))
+          id_token = resp_json['id_token']            
+          decoded = self.get_decoded_token(id_token)
 
-          @default('tenant_id')
-          def _tenant_id_default(self):
-              return os.environ.get('AAD_TENANT_ID', '')
+          self.log.info('authenticate decoded:%s' % decoded)
+          userdict = {}
+          userdict["name"] = decoded[self.username_claim]
+          userdict["auth_state"] = auth_state = {}
+          auth_state['user'] = decoded          
+          return userdict   
+    01-auth-config: |
+      from tornado import gen
+      class CustomValidatedTokenADAuthenticator(ValidatedTokenADAuthenticator):
+        async def update_auth_state_hook(self, auth_state, raise_unauthorized_error=False):
+          auth_state_user = auth_state['user']
+          # get the UID and GID from the Azure Active Directory roles field. 
+          # see https://docs.microsoft.com/en-us/azure/active-directory/develop/howto-add-app-roles-in-azure-ad-apps
+          # in this sample the roles are of the format ['uid,gid'] so we parse it to extract the uid and gid.
+          # app role assignment can be done in Azure AD using Azure portal in the manifest. See the example below
+          #   "appRoles": [
+          #   {
+          #     "allowedMemberTypes": [
+          #       "User"
+          #     ],
+          #     "description": "Advanced users have the ability to view and edit notebooks.",
+          #     "displayName": "Advanced",
+          #     "id": "d1c2ade8-98f8-45fd-aa4a-6d06b947c46f",
+          #     "isEnabled": true,
+          #     "lang": null,
+          #     "origin": "Application",
+          #     "value": "2000,2000,250,"
+          #   },
+          #   {
+          #     "allowedMemberTypes": [
+          #       "User"
+          #     ],
+          #     "description": "Basic users have the ability to view notebooks.",
+          #     "displayName": "Basic",
+          #     "id": "d1c2ade8-98f8-45fd-aa4a-6d06b947c26f",
+          #     "isEnabled": true,
+          #     "lang": null,
+          #     "origin": "Application",
+          #     "value": "1000,1000,500,standard_environment"
+          #   }
+          # ],
+          # to force a user to have access set user assignment required in the AD application https://docs.microsoft.com/en-us/azure/active-directory/manage-apps/assign-user-or-group-access-portal#configure-an-application-to-require-user-assignment
+          # to make this production grade update the code below to check for the roles attribute otherwise provide a default value.              
+          nb_uid = "1000" # default uid
+          nb_gid = "500" # primary group id
+          nb_ogids = "1000" # other gids, separated by semi-colon
+          nb_slug = None
+          if 'roles' in auth_state_user: # this is defensive in case user assignment required is not set
+            nb_user_roles = auth_state_user['roles'][0].split(',')
+            nb_uid = nb_user_roles[0]
+            nb_gid = nb_user_roles[1]
+            nb_ogids = nb_user_roles[2]
+            nb_slug = nb_user_roles[3]
+          else:
+            # If user must be assigned before use then set the raise_unauthorized_error flag to True
+            if raise_unauthorized_error:
+              from tornado import web
+              raise web.HTTPError(401) # raise an UnAuthorized error as user has not been assigned
+          auth_state['uid'] = nb_uid
+          auth_state["gid"] = nb_gid
+          auth_state["ogids"] = nb_ogids
+          auth_state["user_slug"] = nb_slug
+          username = auth_state_user['email'].replace('.','').split("@")[0]
+          auth_state['username'] = username
+        
+        @gen.coroutine
+        def pre_spawn_start(self, user, spawner):
+            auth_state = yield user.get_auth_state()              
+            spawner.environment['NB_USER'] = user.name
+            spawner.environment['NB_UID'] = auth_state["uid"]
+            spawner.environment['NB_GID'] = auth_state["gid"]
+            spawner.environment['NB_OGIDS'] = auth_state["ogids"]
+        
+        async def authenticate(self, handler, data=None):
+          userdict = await super().authenticate(handler, data)
+          auth_state = userdict["auth_state"]
+          await self.update_auth_state_hook(auth_state)
+          userdict["name"] = auth_state['username']          
+          return userdict
 
-          username_claim = Unicode(config=True)
-
-          # use the v2 version of the authorization as it allows custom claim mapping.
-          # https://d1ocs.microsoft.com/en-us/azure/active-directory/develop/active-directory-claims-mapping#example-create-and-assign-a-policy-to-include-the-employeeid-and-tenantcountry-as-claims-in-tokens-issued-to-a-service-principal
-          @default("authorize_url")
-          def _authorize_url_default(self):
-            return 'https://login.microsoftonline.com/{0}/oauth2/v2.0/authorize'.format(self.tenant_id)
-
-          # use the v2 version of the token as it allows custom claim mapping.
-          # https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-claims-mapping#example-create-and-assign-a-policy-to-include-the-employeeid-and-tenantcountry-as-claims-in-tokens-issued-to-a-service-principal
-          @default("token_url")
-          def _token_url_default(self):
-            return 'https://login.microsoftonline.com/{0}/oauth2/v2.0/token'.format(self.tenant_id)
-          
-          # the v2 version of the APIs requires a scope.
-          # https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-claims-mapping#example-create-and-assign-a-policy-to-include-the-employeeid-and-tenantcountry-as-claims-in-tokens-issued-to-a-service-principal
-          @default("scope")
-          def _scope(self):
-            return ['openid']
-          
-          @default('username_claim')
-          def _username_claim_default(self):
-            return 'onprem_sid'
-
-          def get_decoded_token(self, token):
-            AZURE_AD_OPEN_ID_CONFIGURATION_URL = \
-            "https://login.microsoftonline.com/{}/v2.0/.well-known/openid-configuration?appid={}" \
-            .format(self.tenant_id,self.client_id)
-            res = requests.get(AZURE_AD_OPEN_ID_CONFIGURATION_URL)
-            jwk_keys = requests.get(res.json()["jwks_uri"]).json()
-
-            public_keys = {}
-            for jwk in jwk_keys['keys']:
-                kid = jwk['kid']
-                public_keys[kid] = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk))
-            kid = jwt.get_unverified_header(token)['kid']
-            public_key = public_keys[kid]
-
-            algorithm = ['RS256']
-            decoded = jwt.decode(token,
-                                key=public_key,
-                                algorithm=algorithm,
-                                audience=self.client_id)
-            return decoded
-
-          async def authenticate(self, handler, data=None):
-            code = handler.get_argument("code")                            
-            http_client = AsyncHTTPClient()
-
-            params = dict(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                grant_type='authorization_code',
-                code=code,
-                redirect_uri=self.get_callback_url(handler))
-
-            data = urllib.parse.urlencode(
-                params, doseq=True, encoding='utf-8', safe='=')
-
-            url = self.token_url
-            headers = {
-                'Content-Type':
-                'application/x-www-form-urlencoded; charset=UTF-8'
-            }
-            req = HTTPRequest(
-                url,
-                method="POST",
-                headers=headers,
-                body=data  # Body is required for a POST...
-            )
-
-            resp = await http_client.fetch(req)
-            resp_json = json.loads(resp.body.decode('utf8', 'replace'))
-            id_token = resp_json['id_token']            
-            decoded = self.get_decoded_token(id_token)
-
-            # self.log.info('authenticate decoded:%s' % decoded)
-            userdict = {}
-            userdict["auth_state"] = auth_state = {}
-            auth_state['user'] = decoded            
-            
-            def _update_auth_state(auth_state, raise_unauthorized_error=False):
-              auth_state_user = auth_state['user']
-              # get the UID and GID from the Azure Active Directory roles field. 
-              # see https://docs.microsoft.com/en-us/azure/active-directory/develop/howto-add-app-roles-in-azure-ad-apps
-              # in this sample the roles are of the format ['uid,gid'] so we parse it to extract the uid and gid.
-              # app role assignment can be done in Azure AD using Azure portal in the manifest. See the example below
-              #   "appRoles": [
-              #   {
-              #     "allowedMemberTypes": [
-              #       "User"
-              #     ],
-              #     "description": "Advanced users have the ability to view and edit notebooks.",
-              #     "displayName": "Advanced",
-              #     "id": "d1c2ade8-98f8-45fd-aa4a-6d06b947c46f",
-              #     "isEnabled": true,
-              #     "lang": null,
-              #     "origin": "Application",
-              #     "value": "2000,2000,250,"
-              #   },
-              #   {
-              #     "allowedMemberTypes": [
-              #       "User"
-              #     ],
-              #     "description": "Basic users have the ability to view notebooks.",
-              #     "displayName": "Basic",
-              #     "id": "d1c2ade8-98f8-45fd-aa4a-6d06b947c26f",
-              #     "isEnabled": true,
-              #     "lang": null,
-              #     "origin": "Application",
-              #     "value": "1000,1000,500,standard_environment"
-              #   }
-              # ],
-              # to force a user to have access set user assignment required in the AD application https://docs.microsoft.com/en-us/azure/active-directory/manage-apps/assign-user-or-group-access-portal#configure-an-application-to-require-user-assignment
-              # to make this production grade update the code below to check for the roles attribute otherwise provide a default value.              
-              nb_uid = "1000" # default uid
-              nb_gid = "500" # primary group id
-              nb_ogids = "1000" # other gids, separated by semi-colon
-              nb_slug = None
-              if 'roles' in auth_state_user: # this is defensive in case user assignment required is not set
-                nb_user_roles = auth_state_user['roles'][0].split(',')
-                nb_uid = nb_user_roles[0]
-                nb_gid = nb_user_roles[1]
-                nb_ogids = nb_user_roles[2]
-                nb_slug = nb_user_roles[3]
-              else:
-                # If user must be assigned before use then set the raise_unauthorized_error flag to True
-                if raise_unauthorized_error:
-                  from tornado import web
-                  raise web.HTTPError(401) # raise an UnAuthorized error as user has not been assigned
-              auth_state['uid'] = nb_uid
-              auth_state["gid"] = nb_gid
-              auth_state["ogids"] = nb_ogids
-              auth_state["user_slug"] = nb_slug
-
-              username = auth_state_user['email'].replace('.','').split("@")[0]
-              auth_state['username'] = username
-            
-            _update_auth_state(auth_state)
-            userdict["name"] = auth_state['username']
-            return userdict
-
-          @gen.coroutine
-          def pre_spawn_start(self, user, spawner):
-              auth_state = yield user.get_auth_state()              
-              spawner.environment['NB_USER'] = user.name
-              spawner.environment['NB_UID'] = auth_state["uid"]
-              spawner.environment['NB_GID'] = auth_state["gid"]
-              spawner.environment['NB_OGIDS'] = auth_state["ogids"]
-
-      c.JupyterHub.authenticator_class = CustomAzureADAuthenticator
-    01-spawn-config: |
+      c.JupyterHub.authenticator_class = CustomValidatedTokenADAuthenticator
+    02-spawn-config: |
       # from https://jupyterhub.readthedocs.io/en/stable/api/spawner.html#jupyterhub.spawner.Spawner.auth_state_hook
       def userdata_hook(spawner, auth_state):
           spawner.userslug = auth_state["user_slug"]
