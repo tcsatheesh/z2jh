@@ -1,7 +1,7 @@
 hub:
   service:
     type: ClusterIP
-  extraVolumes: 
+  extraVolumes:
     - name: uitemplates-azurefiles
       persistentVolumeClaim:
         claimName: uitemplates-azurefiles
