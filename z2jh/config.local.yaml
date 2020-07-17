@@ -124,13 +124,39 @@ hub:
               # get the UID and GID from the Azure Active Directory roles field. 
               # see https://docs.microsoft.com/en-us/azure/active-directory/develop/howto-add-app-roles-in-azure-ad-apps
               # in this sample the roles are of the format ['uid,gid'] so we parse it to extract the uid and gid.
-              # app role assignment can be done in Azure AD using Azure portal.
+              # app role assignment can be done in Azure AD using Azure portal in the manifest. See the example below
+              #   "appRoles": [
+              #   {
+              #     "allowedMemberTypes": [
+              #       "User"
+              #     ],
+              #     "description": "Advanced users have the ability to view and edit notebooks.",
+              #     "displayName": "Advanced",
+              #     "id": "d1c2ade8-98f8-45fd-aa4a-6d06b947c46f",
+              #     "isEnabled": true,
+              #     "lang": null,
+              #     "origin": "Application",
+              #     "value": "2000,2000,250,"
+              #   },
+              #   {
+              #     "allowedMemberTypes": [
+              #       "User"
+              #     ],
+              #     "description": "Basic users have the ability to view notebooks.",
+              #     "displayName": "Basic",
+              #     "id": "d1c2ade8-98f8-45fd-aa4a-6d06b947c26f",
+              #     "isEnabled": true,
+              #     "lang": null,
+              #     "origin": "Application",
+              #     "value": "1000,1000,500,standard_environment"
+              #   }
+              # ],
               # to force a user to have access set user assignment required in the AD application https://docs.microsoft.com/en-us/azure/active-directory/manage-apps/assign-user-or-group-access-portal#configure-an-application-to-require-user-assignment
-              # to make this production grade update the code below to check for the roles attribute otherwise provide a default value.
+              # to make this production grade update the code below to check for the roles attribute otherwise provide a default value.              
               nb_uid = "1000" # default uid
               nb_gid = "500" # primary group id
               nb_ogids = "1000" # other gids, separated by semi-colon
-              nb_slug = "standard_environment"
+              nb_slug = None
               if 'roles' in auth_state_user: # this is defensive in case user assignment required is not set
                 nb_user_roles = auth_state_user['roles'][0].split(',')
                 nb_uid = nb_user_roles[0]
@@ -138,9 +164,10 @@ hub:
                 nb_ogids = nb_user_roles[2]
                 nb_slug = nb_user_roles[3]
               else:
+                # If user must be assigned before use then set the raise_unauthorized_error flag to True
                 if raise_unauthorized_error:
                   from tornado import web
-                  raise web.HTTPError(401)
+                  raise web.HTTPError(401) # raise an UnAuthorized error as user has not been assigned
               auth_state['uid'] = nb_uid
               auth_state["gid"] = nb_gid
               auth_state["ogids"] = nb_ogids
